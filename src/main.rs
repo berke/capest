@@ -98,23 +98,23 @@ impl From<(usize,usize)> for CellId {
     }
 }
 
-#[derive(Clone)]
-struct CellSet {
-    cells:Vec<CellId>
-}
+// #[derive(Clone)]
+// struct CellSet {
+//     cells:Vec<CellId>
+// }
 
-impl CellSet {
-    pub fn new()->Self {
-	Self { cells:Vec::new() }
-    }
+// impl CellSet {
+//     pub fn new()->Self {
+// 	Self { cells:Vec::new() }
+//     }
 
-    pub fn insert(&mut self,c:CellId) {
-	self.cells.push(c)
-    }
-}
+//     pub fn insert(&mut self,c:CellId) {
+// 	self.cells.push(c)
+//     }
+// }
 
 struct ConnectedComponents {
-    components:Vec<CellSet>
+    components:Vec<Vec<CellId>>
 }
 
 impl ConnectedComponents {
@@ -122,7 +122,8 @@ impl ConnectedComponents {
 	let (ny,nx) = a.dim();
 	let mut components = Vec::new();
 	let mut remaining : BTreeSet<CellId> = BTreeSet::new();
-	let mut visited = Array2::zeros((ny as usize,nx as usize));
+	let p = (ny*nx + 63) & !63;
+	let mut visited : Array1<u64> = Array1::zeros(p);
 
 	for (idx,x) in a.indexed_iter() {
 	    if x & mask != 0 {
@@ -130,23 +131,29 @@ impl ConnectedComponents {
 	    }
 	}
 
+	let mut component = Vec::new();
+	let mut active = Vec::new();
+
 	loop {
 	    if let Some(k) = remaining.pop_first() {
-		let mut component = CellSet::new();
-		let mut active = Vec::new();
+		component.clear();
+		active.clear();
 		active.push(k);
 		loop {
 		    if let Some(k) = active.pop() {
-			visited[[k.iy as usize,k.ix as usize]] = 1;
+			let q = (k.iy as usize * nx) + k.ix as usize;
+			visited[q >> 6] |= 1 << (q & 63);
 			remaining.remove(&k);
-			component.insert(k);
+			component.push(k);
 			for c in k.neighbours() {
 			    if c.iy >= 0 && c.ix >= 0 {
 				let iy = c.iy as usize;
 				let ix = c.ix as usize;
-				if visited[[iy,ix]] == 0 &&
+				let r = iy * nx + ix;
+				let m = 1 << (r & 63);
+				if visited[r >> 6] & m == 0 &&
 				    a[[iy,ix]] & mask != 0 {
-				    visited[[iy,ix]] = 1;
+				    visited[r >> 6] |= m;
 				    active.push(c);
 				}
 			    }
@@ -155,7 +162,7 @@ impl ConnectedComponents {
 			break;
 		    }
 		}
-		components.push(component);
+		components.push(component.clone());
 	    } else {
 		break;
 	    }
@@ -163,6 +170,12 @@ impl ConnectedComponents {
 	
 	Self {
 	    components
+	}
+    }
+
+    pub fn dump(&self) {
+	for (icom,com) in self.components.iter().enumerate() {
+	    println!("  {:05} {:10}",icom,com.len());
 	}
     }
 }
@@ -178,6 +191,10 @@ fn main()->Res<()> {
     println!("Dimensions: {} x {}",ny,nx);
 
     let cc = artwork.connected_components();
+    for ilay in 0..artwork.num_layers {
+	println!("Layer {}",ilay);
+	cc[ilay].dump();
+    }
     
     let output_fn : String = args.value_from_str("--output")?;
     let fd = hdf5::File::create(&output_fn)?;
