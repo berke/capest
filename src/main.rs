@@ -6,6 +6,7 @@ mod spherical;
 mod disk;
 mod progress;
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
@@ -30,6 +31,7 @@ fn convert(x:Real)->u8 {
 }
 
 struct Artwork {
+    num_layers:usize,
     layers:Array2<u16>
 }
 
@@ -57,8 +59,111 @@ impl Artwork {
 	    }
 	    layers_opt = Some(layers);
 	}
+	let num_layers = lay_fns.len();
 	let layers = layers_opt.ok_or_else(|| error("No layers"))?;
-	Ok(Self { layers })
+	Ok(Self { num_layers,layers })
+    }
+
+    pub fn connected_components(&self)->Vec<ConnectedComponents> {
+	let mut components = Vec::new();
+	for ilay in 0..self.num_layers {
+	    let cc = ConnectedComponents::from_array(&self.layers,1 << ilay);
+	    components.push(cc);
+	}
+	components
+    }
+}
+
+#[derive(Copy,Clone,Debug,PartialEq,PartialOrd,Ord,Eq)]
+struct CellId {
+    iy:i16,
+    ix:i16
+}
+
+impl CellId {
+    pub fn neighbours(&self)->[Self;4] {
+	let &Self { iy,ix } = self;
+	[
+	    Self { iy:iy - 1, ix },
+	    Self { iy:iy + 1, ix },
+	    Self { iy:iy, ix:ix - 1 },
+	    Self { iy:iy, ix:ix + 1 }
+	]
+    }
+}
+
+impl From<(usize,usize)> for CellId {
+    fn from((iy,ix):(usize,usize))->Self {
+	Self { iy:iy as i16,ix:ix as i16 }
+    }
+}
+
+#[derive(Clone)]
+struct CellSet {
+    cells:Vec<CellId>
+}
+
+impl CellSet {
+    pub fn new()->Self {
+	Self { cells:Vec::new() }
+    }
+
+    pub fn insert(&mut self,c:CellId) {
+	self.cells.push(c)
+    }
+}
+
+struct ConnectedComponents {
+    components:Vec<CellSet>
+}
+
+impl ConnectedComponents {
+    pub fn from_array(a:&Array2<u16>,mask:u16)->Self {
+	let (ny,nx) = a.dim();
+	let mut components = Vec::new();
+	let mut remaining : BTreeSet<CellId> = BTreeSet::new();
+	let mut visited = Array2::zeros((ny as usize,nx as usize));
+
+	for (idx,x) in a.indexed_iter() {
+	    if x & mask != 0 {
+		remaining.insert(idx.into());
+	    }
+	}
+
+	loop {
+	    if let Some(k) = remaining.pop_first() {
+		let mut component = CellSet::new();
+		let mut active = Vec::new();
+		active.push(k);
+		loop {
+		    if let Some(k) = active.pop() {
+			visited[[k.iy as usize,k.ix as usize]] = 1;
+			remaining.remove(&k);
+			component.insert(k);
+			for c in k.neighbours() {
+			    if c.iy >= 0 && c.ix >= 0 {
+				let iy = c.iy as usize;
+				let ix = c.ix as usize;
+				if visited[[iy,ix]] == 0 &&
+				    a[[iy,ix]] & mask != 0 {
+				    visited[[iy,ix]] = 1;
+				    active.push(c);
+				}
+			    }
+			}
+		    } else {
+			break;
+		    }
+		}
+		components.push(component);
+	    } else {
+		break;
+	    }
+	}
+	
+	Self {
+	    components
+	}
     }
 }
 
@@ -71,6 +176,8 @@ fn main()->Res<()> {
     let artwork = Artwork::new(&lay_fns_str)?;
     let (ny,nx) = artwork.layers.dim();
     println!("Dimensions: {} x {}",ny,nx);
+
+    let cc = artwork.connected_components();
     
     let output_fn : String = args.value_from_str("--output")?;
     let fd = hdf5::File::create(&output_fn)?;
