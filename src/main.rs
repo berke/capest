@@ -98,23 +98,8 @@ impl From<(usize,usize)> for CellId {
     }
 }
 
-// #[derive(Clone)]
-// struct CellSet {
-//     cells:Vec<CellId>
-// }
-
-// impl CellSet {
-//     pub fn new()->Self {
-// 	Self { cells:Vec::new() }
-//     }
-
-//     pub fn insert(&mut self,c:CellId) {
-// 	self.cells.push(c)
-//     }
-// }
-
 struct ConnectedComponents {
-    components:Vec<Vec<CellId>>
+    components:Vec<BTreeSet<CellId>>
 }
 
 impl ConnectedComponents {
@@ -162,7 +147,8 @@ impl ConnectedComponents {
 			break;
 		    }
 		}
-		components.push(component.clone());
+		let c : BTreeSet<CellId> = component.iter().cloned().collect();
+		components.push(c);
 	    } else {
 		break;
 	    }
@@ -190,10 +176,45 @@ fn main()->Res<()> {
     let (ny,nx) = artwork.layers.dim();
     println!("Dimensions: {} x {}",ny,nx);
 
+    let dpi : f64 = args.opt_value_from_str("--dpi")?.unwrap_or(600.0);
+    let eps_rel : f64 = args.opt_value_from_str("--eps-rel")?.unwrap_or(4.2);
+    let thickness : f64 = args.opt_value_from_str("--thickness")?.
+	unwrap_or(1.6e-3);
+    let cap_min : f64 = args.opt_value_from_str("--cap-min")?.unwrap_or(1e-12);
+
     let cc = artwork.connected_components();
-    for ilay in 0..artwork.num_layers {
+    let nlay = artwork.num_layers;
+    
+    let delta = 25.4e-3 / dpi;
+    
+    for ilay in 0..nlay {
 	println!("Layer {}",ilay);
-	cc[ilay].dump();
+	let mut jlays = Vec::new();
+	if ilay > 1 {
+	    jlays.push(ilay - 1);
+	}
+	if ilay + 1 < nlay {
+	    jlays.push(ilay + 1);
+	}
+	let cci = &cc[ilay];
+	for jlay in jlays {
+	    let ccj = &cc[jlay];
+	    for (icomi,comi) in cci.components.iter().enumerate() {
+		for (icomj,comj) in ccj.components.iter().enumerate() {
+		    let n = comi.intersection(comj).count();
+		    if n > 0 {
+			let area = n as f64 * delta * delta;
+			let cap = 8.854e-12 * eps_rel * area / thickness;
+			if cap >= cap_min {
+			    println!("  {:02}:{:05} - {:02}:{:05} : {:7.3} pF",
+				     ilay,icomi,jlay,icomj,
+				     cap/1e-12);
+			}
+		    }
+		}
+	    }
+	}
+	// cc[ilay].dump();
     }
     
     let output_fn : String = args.value_from_str("--output")?;
