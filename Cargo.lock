@@ -104,6 +104,7 @@ dependencies = [
  "num",
  "pico-args",
  "rayon",
+ "regex",
  "serde",
 ]
 

@@ -18,3 +18,8 @@ serde = { version = "1", features = ["serde_derive"] }
 image = { version = "^0.23" }
 rayon = { version = "^1.5" }
 pico-args = { version = "^0.5" }
+regex = { version = "^1.9" }
+
+[[bin]]
+name = "gerber"
+path = "src/gerber.rs"
