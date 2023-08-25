@@ -41,7 +41,12 @@ enum GerberCommand {
     SetAperture(u32),
     DefineAperture {
 	code:u32,
-	template:GerberApertureTemplate
+	template:String,
+	params:Vec<f64>
+    },
+    ApertureMacro {
+	name:String,
+	contents:Vec<GerberApertureMacroContent>
     },
     LoadPolarity(GerberPolarity),
     SetMode(GerberMode),
@@ -49,6 +54,85 @@ enum GerberCommand {
     BeginRegion,
     EndRegion,
     Comment(String)
+}
+
+#[derive(Debug,Clone)]
+struct GerberPoint {
+    x:f64,
+    y:f64
+}
+
+#[derive(Debug,Clone)]
+enum GerberBinop {
+    Add,
+    Sub,
+    Mul,
+    Div
+}
+
+#[derive(Debug,Clone)]
+enum GerberArithmeticExpr {
+    Const(f64),
+    Var(u32),
+    Binop(GerberBinop,Box<Self>,Box<Self>)
+}
+
+#[derive(Debug,Clone)]
+enum GerberApertureMacroContent {
+    DefineVar {
+	name:u32,
+	value:GerberArithmeticExpr
+    },
+    Circle {
+	exposure:bool,
+	diameter:f64,
+	center:GerberPoint,
+	rotation:Option<f64>
+    },
+    VectorLine {
+	exposure:bool,
+	line_width:f64,
+	start:GerberPoint,
+	end:GerberPoint,
+	rotation:f64
+    },
+    CenterLine {
+	exposure:bool,
+	width:f64,
+	height:f64,
+	center:GerberPoint,
+	rotation:f64
+    },
+    Outline {
+	exposure:bool,
+	vertices:Vec<GerberPoint>,
+	rotation:f64
+    },
+    Polygon {
+	exposure:bool,
+	num_vertices:u32,
+	center:GerberPoint,
+	diameter:f64,
+	rotation:f64
+    },
+    Moire {
+	center:GerberPoint,
+	outer_diameter:f64,
+	ring_thickness:f64,
+	ring_gap:f64,
+	max_num_rings:u32,
+	crosshair_thickness:f64,
+	crosshair_length:f64,
+	rotation:f64
+    },
+    Thermal {
+	center:GerberPoint,
+	outer_diameter:f64,
+	inner_diameter:f64,
+	gap_thickness:f64,
+	rotation:f64
+    },
+    Comment(String),
 }
 
 #[derive(Debug,Clone)]
@@ -173,20 +257,24 @@ impl Gerber {
 	    .collect()
     }
 
+    fn aperture_macro_contents_from_str(u:&str)->Option<Vec<GerberApertureMacroContent>> {
+	println!("AMC {}",u);
+	None
+    }
+
     pub fn parse(u:&str)->Res<Self> {
 	let mut commands : Vec<GerberCommand> = Vec::new();
 	
 	let block_rex = Regex::new(r"([^%*]+)\*|%([^%]+)\*%")?;
-
-	// let d_rex = Regex::new(r"^D([0-9]{2})$")?;
 	let op_rex = Regex::new(r"^X([+-]?[0-9]+)Y([+-]?[0-9]+)D([0-9]{2})$")?;
 	let del_attr_rex = Regex::new(r"^TD(.+)?$")?;
 	let attr_rex = Regex::new(r"^T([FAO])([^,]+)((,[^,]+)*)$")?;
 	let comment_rex = Regex::new(r"^G04 (.*)$")?;
 	let mode_rex = Regex::new(r"^MO(MM|IN)$")?;
 	let aperture_rex = Regex::new(r"^D([1-9][0-9]+)$")?;
-	let def_aperture_rex = Regex::new(r"^ADD([1-9][0-9]+)([CROP]),(.*)$")?;
 	let decimal = r"[+-]?(:?[0-9]+(:?\.[0-9]*)?|\.[0-9]+)";
+	let def_aperture_rex = Regex::new(
+	    &format!(r"^ADD([1-9][0-9]+)([A-Za-z0-9]+),({decimal}(:?X{decimal})*)$"))?;
 	let circ_rex = Regex::new(&format!("^{decimal}(:?X({decimal}))?$"))?;
 	let rect_rex =
 	    Regex::new(&format!("^{decimal}X({decimal})(:?X({decimal}))?$"))?;
@@ -194,6 +282,9 @@ impl Gerber {
 	    Regex::new(&format!("^{decimal}X({decimal})(:?X({decimal}))?$"))?;
 	let fs_rex = Regex::new(r"^FSLAX([0-9]{2})Y([0-9]{2})$")?;
 	let lp_rex = Regex::new(r"^LP([DC])$")?;
+	let am_rex = Regex::new(r"^AM([A-Za-z0-9]+)*(.*)$")?;
+
+	// let d_rex = Regex::new(r"^D([0-9]{2})$")?;
 	let m = u.len();
 	let mut eof = false;
 
@@ -218,6 +309,18 @@ impl Gerber {
 		    } else if let Some(caps) = aperture_rex.captures(&cmd) {
 			let d : u32 = caps[1].parse()?;
 			Some(GerberCommand::SetAperture(d))
+		    } else if let Some(caps) = am_rex.captures(&cmd) {
+			let name : String = caps[1].into();
+			let macro_def : &str = &caps[2];
+			if let Some(contents) =
+			    Self::aperture_macro_contents_from_str(macro_def) {
+			    Some(GerberCommand::ApertureMacro {
+				name,
+				contents
+			    })
+			} else {
+			    None
+			}
 		    } else {
 			match cmd.as_str() {
 			    "M02" => {
@@ -270,74 +373,82 @@ impl Gerber {
 			Some(GerberCommand::LoadPolarity(caps[1].into()))
 		    } else if let Some(caps) = def_aperture_rex.captures(&cmd) {
 			let code : u32 = caps[1].parse()?;
-			let kind = &caps[2];
-			let descr = &caps[3];
-			let template_o =
-			    match kind {
-				"C" => {
-				    if let Some(caps_d) = circ_rex.captures(descr) {
-					let diameter : f64 = caps_d[1].parse()?;
-					let hole_diameter : Option<f64> =
-					    caps_d.get(2).map(|x| x.as_str()
-							      .parse()
-							      .unwrap());
-					Some(GerberApertureTemplate::Circle {
-					    diameter,
-					    hole_diameter
-					})
-				    } else {
-					println!("BADC {} {} {}",code,kind,descr);
-					None
-				    }
-				},
-				"R" => {
-				    if let Some(caps_d) = rect_rex.captures(descr) {
-					let x_size : f64 = caps_d[1].parse()?;
-					let y_size : f64 = caps_d[2].parse()?;
-					let hole_diameter : Option<f64> =
-					    caps_d.get(3).map(|x| x.as_str()
-							      .parse()
-							      .unwrap());
-					Some(GerberApertureTemplate::Rectangle {
-					    x_size,
-					    y_size,
-					    hole_diameter
-					})
-				    } else {
-					None
-				    }
-				},
-				"O" => {
-				    if let Some(caps_d) = obr_rex.captures(descr) {
-					let x_size : f64 = caps_d[1].parse()?;
-					let y_size : f64 = caps_d[2].parse()?;
-					let hole_diameter : Option<f64> =
-					    caps_d.get(3).map(|x| x.as_str()
-							      .parse()
-							      .unwrap());
-					Some(GerberApertureTemplate::Obround {
-					    x_size,
-					    y_size,
-					    hole_diameter
-					})
-				    } else {
-					None
-				    }
-				},
-				_ => {
-				    println!("WEIRD {} {} {}",code,kind,descr);
-				    None
-				}
-			    };
-			if let Some(template) = template_o {
+			let template = caps[2].to_string();
+			let params : Vec<f64> =
+			    caps[3]
+			    .split('X')
+			    .map(|x| x.parse().unwrap())
+			    .collect();
+
+
+
+			// let template_o =
+			    // match kind {
+			    // 	"C" => {
+			    // 	    if let Some(caps_d) = circ_rex.captures(descr) {
+			    // 		let diameter : f64 = caps_d[1].parse()?;
+			    // 		let hole_diameter : Option<f64> =
+			    // 		    caps_d.get(2).map(|x| x.as_str()
+			    // 				      .parse()
+			    // 				      .unwrap());
+			    // 		Some(GerberApertureTemplate::Circle {
+			    // 		    diameter,
+			    // 		    hole_diameter
+			    // 		})
+			    // 	    } else {
+			    // 		println!("BADC {} {} {}",code,kind,descr);
+			    // 		None
+			    // 	    }
+			    // 	},
+			    // 	"R" => {
+			    // 	    if let Some(caps_d) = rect_rex.captures(descr) {
+			    // 		let x_size : f64 = caps_d[1].parse()?;
+			    // 		let y_size : f64 = caps_d[2].parse()?;
+			    // 		let hole_diameter : Option<f64> =
+			    // 		    caps_d.get(3).map(|x| x.as_str()
+			    // 				      .parse()
+			    // 				      .unwrap());
+			    // 		Some(GerberApertureTemplate::Rectangle {
+			    // 		    x_size,
+			    // 		    y_size,
+			    // 		    hole_diameter
+			    // 		})
+			    // 	    } else {
+			    // 		None
+			    // 	    }
+			    // 	},
+			    // 	"O" => {
+			    // 	    if let Some(caps_d) = obr_rex.captures(descr) {
+			    // 		let x_size : f64 = caps_d[1].parse()?;
+			    // 		let y_size : f64 = caps_d[2].parse()?;
+			    // 		let hole_diameter : Option<f64> =
+			    // 		    caps_d.get(3).map(|x| x.as_str()
+			    // 				      .parse()
+			    // 				      .unwrap());
+			    // 		Some(GerberApertureTemplate::Obround {
+			    // 		    x_size,
+			    // 		    y_size,
+			    // 		    hole_diameter
+			    // 		})
+			    // 	    } else {
+			    // 		None
+			    // 	    }
+			    // 	},
+			    // 	_ => {
+			    // 	    println!("WEIRD {} {} {}",code,kind,descr);
+			    // 	    None
+			    // 	}
+			    // };
+			// if let Some(template) = template_o {
 			    Some(GerberCommand::DefineAperture {
 				code,
-				template
+				template,
+				params
 			    })
-			} else {
-			    println!("?ADD {}",cmd);
-			    None
-			}
+			// } else {
+			//     println!("?ADD {}",cmd);
+			//     None
+			// }
 		    } else {
 			println!("?X {}",cmd);
 			None
