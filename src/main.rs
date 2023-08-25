@@ -5,6 +5,9 @@ mod xorwow;
 mod spherical;
 mod disk;
 mod progress;
+mod ndarray_image;
+mod gerber;
+mod common;
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -19,11 +22,10 @@ use math::*;
 // use progress::ProgressIndicator;
 use pico_args::Arguments;
 
-type Res<T> = Result<T,Box<dyn Error>>;
+use xorwow::Xorwow;
+use gerber::{Image,NetInfos};
 
-fn error(msg:&str)->Box<dyn Error> {
-    Box::new(std::io::Error::new(std::io::ErrorKind::Other,msg))
-}
+use common::*;
 
 fn convert(x:Real)->u8 {
     let x = (255.0 * x + 0.5).floor() as isize;
@@ -95,6 +97,13 @@ impl CellId {
 impl From<(usize,usize)> for CellId {
     fn from((iy,ix):(usize,usize))->Self {
 	Self { iy:iy as i16,ix:ix as i16 }
+    }
+}
+
+impl Into<(usize,usize)> for CellId {
+    fn into(self)->(usize,usize) {
+	(self.iy as usize,
+	 self.ix as usize)
     }
 }
 
@@ -172,6 +181,10 @@ fn main()->Res<()> {
     println!("Layers");
     let lay_fns : Vec<String> = args.values_from_str("--layer")?;
     let lay_fns_str : Vec<&str> = lay_fns.iter().map(|s| s.as_str()).collect();
+
+    let gbr_fns : Vec<String> = args.values_from_str("--gerber")?;
+    let gbr_fns_str : Vec<&str> = gbr_fns.iter().map(|s| s.as_str()).collect();
+
     let artwork = Artwork::new(&lay_fns_str)?;
     let (ny,nx) = artwork.layers.dim();
     println!("Dimensions: {} x {}",ny,nx);
@@ -181,45 +194,162 @@ fn main()->Res<()> {
     let thickness : f64 = args.opt_value_from_str("--thickness")?.
 	unwrap_or(1.6e-3);
     let cap_min : f64 = args.opt_value_from_str("--cap-min")?.unwrap_or(1e-12);
+    let x0 : f64 = args.opt_value_from_str("--origin-x")?.unwrap_or(0.0);
+    let y0 : f64 = args.opt_value_from_str("--origin-y")?.unwrap_or(0.0);
+    let mark_x : Option<f64> = args.opt_value_from_str("--mark-x")?;
+    let mark_y : Option<f64> = args.opt_value_from_str("--mark-y")?;
 
     let cc = artwork.connected_components();
     let nlay = artwork.num_layers;
     
-    let delta = 25.4e-3 / dpi;
+    let delta = 25.4 / dpi;
     
-    for ilay in 0..nlay {
-	println!("Layer {}",ilay);
-	let mut jlays = Vec::new();
-	if ilay > 1 {
-	    jlays.push(ilay - 1);
-	}
-	if ilay + 1 < nlay {
-	    jlays.push(ilay + 1);
-	}
-	let cci = &cc[ilay];
-	for jlay in jlays {
-	    let ccj = &cc[jlay];
-	    for (icomi,comi) in cci.components.iter().enumerate() {
-		for (icomj,comj) in ccj.components.iter().enumerate() {
-		    let n = comi.intersection(comj).count();
-		    if n > 0 {
-			let area = n as f64 * delta * delta;
-			let cap = 8.854e-12 * eps_rel * area / thickness;
-			if cap >= cap_min {
-			    println!("  {:02}:{:05} - {:02}:{:05} : {:7.3} pF",
-				     ilay,icomi,jlay,icomj,
-				     cap/1e-12);
+    // Capacitances
+    if false {
+	for ilay in 0..nlay {
+	    println!("Layer {}",ilay);
+	    let mut jlays = Vec::new();
+	    if ilay > 1 {
+		jlays.push(ilay - 1);
+	    }
+	    if ilay + 1 < nlay {
+		jlays.push(ilay + 1);
+	    }
+	    let cci = &cc[ilay];
+	    for jlay in jlays {
+		let ccj = &cc[jlay];
+		for (icomi,comi) in cci.components.iter().enumerate() {
+		    for (icomj,comj) in ccj.components.iter().enumerate() {
+			let n = comi.intersection(comj).count();
+			if n > 0 {
+			    let area = n as f64 * delta * delta;
+			    let cap = 8.854e-12 * eps_rel * area / thickness;
+			    if cap >= cap_min {
+				println!("  {:02}:{:05} - {:02}:{:05} : {:7.3} pF",
+					 ilay,icomi,jlay,icomj,
+					 cap/1e-12);
+			    }
 			}
 		    }
 		}
 	    }
+	    // cc[ilay].dump();
 	}
-	// cc[ilay].dump();
+    }
+
+    let (ny,nx) = artwork.layers.dim();
+
+    let mut xw = Xorwow::new(1);
+
+    // Origin at bottom-left corner
+    // Thus
+    //
+    // X = delta * (ix + 0.5) + X0
+    // Y = (ny - iy - 0.5)*delta + Y0
+
+    // ix = (X - X0)/delta - 0.5
+    // iy = ny - (Y - Y0)/delta - 0.5
+
+    let mut net_infos = Vec::new();
+    for path in &gbr_fns {
+	println!("Loading Gerber file {}",path);
+	let img = Image::from_file(path)?;
+	let infos : NetInfos = (&img).into();
+	net_infos.push(infos);
+    }
+
+    let mut component_ids_per_layer = Array3::zeros((nlay,ny,nx));
+
+    for ilay in 0..nlay {
+	let ccs = &cc[ilay];
+	let m = ccs.components.len();
+	println!("Layer {} components {}",ilay,m);
+
+	let mut palette = Array2::zeros((m,3));
+	for i in 0..m {
+	    let x = xw.next();
+	    palette[[i,0]] = ((x >> 16) & 255) as u8;
+	    palette[[i,1]] = ((x >> 8) & 255) as u8;
+	    palette[[i,2]] = (x & 255) as u8;
+	}
+
+	let mut img : Array3<u8> = Array3::zeros((ny,nx,3));
+
+	for (icom,com) in ccs.components.iter().enumerate() {
+	    let r = palette[[icom,0]];
+	    let g = palette[[icom,1]];
+	    let b = palette[[icom,2]];
+	    for &cid in com.iter() {
+		let (iy,ix) : (usize,usize) = cid.into();
+		img[[iy,ix,0]] = r;
+		img[[iy,ix,1]] = g;
+		img[[iy,ix,2]] = b;
+		component_ids_per_layer[[ilay,iy,ix]] = icom + 1;
+	    }
+	}
+
+	// Try to match components
+	for (name,points) in net_infos[ilay].index.iter() {
+	    print!("{} -> ",name);
+	    for &gerber::Point { x, y } in points.iter() {
+
+		let ixf = ((x - x0)/delta - 0.5).floor();
+		let iyf = (ny as f64 - (y - y0)/delta - 0.5).floor();
+		print!("  {},{} ({},{})",x,y,ixf,iyf);
+		if 0.0 <= ixf && 0.0 <= iyf {
+		    let ix = ixf as usize;
+		    let iy = iyf as usize;
+		    if ix < nx && iy < ny {
+			let icom = component_ids_per_layer[[ilay,iy,ix]];
+			print!(":{}",icom);
+		    } else {
+			print!("?");
+		    }
+		} else {
+		    print!("?");
+		}
+	    }
+	    println!();
+	}
+
+	// Add marker
+	match (mark_x,mark_y) {
+	    (Some(x),Some(y)) => {
+		// X = 
+		let ixf = ((x - x0)/delta - 0.5).floor();
+		let iyf = (ny as f64 - (y - y0)/delta - 0.5).floor();
+		if 0.0 <= ixf && 0.0 <= iyf {
+		    let ix = ixf as usize;
+		    let iy = iyf as usize;
+		    if ix < nx && iy < ny {
+			println!("Marking ix = {}, iy = {}",ix,iy);
+			for ix2 in 0..nx {
+			    img[[iy,ix2,0]] ^= 255;
+			}
+			for iy2 in 0..ny {
+			    img[[iy2,ix,0]] ^= 255;
+			}
+		    } else {
+			println!("Not marking, ix = {}, iy = {}",ix,iy);
+		    }
+		} else {
+		    println!("Not marking, ixf = {}, iyf = {}",ixf,iyf);
+		}
+	    },
+	    _ => ()
+	}
+	    
+
+	ndarray_image::save_image(&format!("layc{}.png",ilay + 1),
+				  img.view(),
+				  ndarray_image::Colors::Rgb)?;
     }
     
     let output_fn : String = args.value_from_str("--output")?;
     let fd = hdf5::File::create(&output_fn)?;
     fd.new_dataset_builder().with_data(&artwork.layers).create("layers")?;
+    fd.new_dataset_builder().with_data(&component_ids_per_layer)
+	.create("component_ids_per_layer")?;
 
     Ok(())
 }
