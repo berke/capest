@@ -192,8 +192,8 @@ fn main()->Res<()> {
     let dpi : f64 = args.opt_value_from_str("--dpi")?.unwrap_or(600.0);
     let eps_rel : f64 = args.opt_value_from_str("--eps-rel")?.unwrap_or(4.2);
     let thickness : f64 = args.opt_value_from_str("--thickness")?.
-	unwrap_or(1.6e-3);
-    let cap_min : f64 = args.opt_value_from_str("--cap-min")?.unwrap_or(1e-12);
+	unwrap_or(1.6);
+    let cap_min : f64 = args.opt_value_from_str("--cap-min")?.unwrap_or(1.0e-12);
     let x0 : f64 = args.opt_value_from_str("--origin-x")?.unwrap_or(0.0);
     let y0 : f64 = args.opt_value_from_str("--origin-y")?.unwrap_or(0.0);
     let mark_x : Option<f64> = args.opt_value_from_str("--mark-x")?;
@@ -203,39 +203,6 @@ fn main()->Res<()> {
     let nlay = artwork.num_layers;
     
     let delta = 25.4 / dpi;
-    
-    // Capacitances
-    if false {
-	for ilay in 0..nlay {
-	    println!("Layer {}",ilay);
-	    let mut jlays = Vec::new();
-	    if ilay > 1 {
-		jlays.push(ilay - 1);
-	    }
-	    if ilay + 1 < nlay {
-		jlays.push(ilay + 1);
-	    }
-	    let cci = &cc[ilay];
-	    for jlay in jlays {
-		let ccj = &cc[jlay];
-		for (icomi,comi) in cci.components.iter().enumerate() {
-		    for (icomj,comj) in ccj.components.iter().enumerate() {
-			let n = comi.intersection(comj).count();
-			if n > 0 {
-			    let area = n as f64 * delta * delta;
-			    let cap = 8.854e-12 * eps_rel * area / thickness;
-			    if cap >= cap_min {
-				println!("  {:02}:{:05} - {:02}:{:05} : {:7.3} pF",
-					 ilay,icomi,jlay,icomj,
-					 cap/1e-12);
-			    }
-			}
-		    }
-		}
-	    }
-	    // cc[ilay].dump();
-	}
-    }
 
     let (ny,nx) = artwork.layers.dim();
 
@@ -259,6 +226,7 @@ fn main()->Res<()> {
     }
 
     let mut component_ids_per_layer = Array3::zeros((nlay,ny,nx));
+    let mut component_names_per_layer = Vec::new();
 
     for ilay in 0..nlay {
 	let ccs = &cc[ilay];
@@ -288,29 +256,36 @@ fn main()->Res<()> {
 	    }
 	}
 
+	let mut component_names = vec![None;m];
+
 	// Try to match components
 	for (name,points) in net_infos[ilay].index.iter() {
-	    print!("{} -> ",name);
+	    // print!("{} -> ",name);
 	    for &gerber::Point { x, y } in points.iter() {
 
 		let ixf = ((x - x0)/delta - 0.5).floor();
 		let iyf = (ny as f64 - (y - y0)/delta - 0.5).floor();
-		print!("  {},{} ({},{})",x,y,ixf,iyf);
+		// print!("  {},{} ({},{})",x,y,ixf,iyf);
 		if 0.0 <= ixf && 0.0 <= iyf {
 		    let ix = ixf as usize;
 		    let iy = iyf as usize;
 		    if ix < nx && iy < ny {
 			let icom = component_ids_per_layer[[ilay,iy,ix]];
-			print!(":{}",icom);
+			if icom > 0 {
+			    component_names[icom - 1] = Some(name);
+			}
+			// print!(":{}",icom);
 		    } else {
-			print!("?");
+			// print!("?");
 		    }
 		} else {
-		    print!("?");
+		    // print!("?");
 		}
 	    }
-	    println!();
+	    // println!();
 	}
+
+	component_names_per_layer.push(component_names);
 
 	// Add marker
 	match (mark_x,mark_y) {
@@ -343,6 +318,48 @@ fn main()->Res<()> {
 	ndarray_image::save_image(&format!("layc{}.png",ilay + 1),
 				  img.view(),
 				  ndarray_image::Colors::Rgb)?;
+    }
+    
+    // Capacitances
+    if true {
+	for ilay in 0..nlay {
+	    println!("Layer {}",ilay);
+	    let mut jlays = Vec::new();
+	    if ilay > 1 {
+		jlays.push(ilay - 1);
+	    }
+	    if ilay + 1 < nlay {
+		jlays.push(ilay + 1);
+	    }
+	    let cci = &cc[ilay];
+	    // TODO: Normalize pairs and sum by nets
+	    for jlay in jlays {
+		let ccj = &cc[jlay];
+		for (icomi,comi) in cci.components.iter().enumerate() {
+		    for (icomj,comj) in ccj.components.iter().enumerate() {
+			let n = comi.intersection(comj).count();
+			if n > 0 {
+			    let area = n as f64 * delta * delta * 1e-6;
+			    let cap = 8.854e-12 * eps_rel * area
+				/ (thickness * 1e-3);
+			    if cap >= cap_min {
+				println!("{:7.3} pF\t{}[{:02}:{:05}] - {}[{:02}:{:05}]",
+					 cap/1e-12,
+					 component_names_per_layer[ilay][icomi]
+					 .map(|x| x.as_str())
+					 .unwrap_or("?"),
+					 ilay,icomi,
+					 component_names_per_layer[jlay][icomj]
+					 .map(|x| x.as_str())
+					 .unwrap_or("?"),
+					 jlay,icomj);
+			    }
+			}
+		    }
+		}
+	    }
+	    // cc[ilay].dump();
+	}
     }
     
     let output_fn : String = args.value_from_str("--output")?;
