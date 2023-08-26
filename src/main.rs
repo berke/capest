@@ -9,7 +9,7 @@ mod ndarray_image;
 mod gerber;
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet,BTreeMap};
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
@@ -175,6 +175,47 @@ impl ConnectedComponents {
     }
 }
 
+struct Registry {
+    name_to_id:BTreeMap<String,usize>,
+    id_to_name:Vec<String>
+}
+
+impl Registry {
+    pub fn new()->Self {
+	Self {
+	    name_to_id:BTreeMap::new(),
+	    id_to_name:Vec::new()
+	}
+    }
+
+    pub fn register(&mut self,name:&str)->usize {
+	*self.name_to_id
+	    .entry(name.to_string())
+	    .or_insert_with(|| {
+		let id = self.id_to_name.len();
+		self.id_to_name.push(name.to_string());
+		id
+	    })
+    }
+
+    pub fn len(&self)->usize {
+	self.id_to_name.len()
+    }
+
+    pub fn find_id(&self,name:&str)->Option<usize> {
+	self.name_to_id.get(name).copied()
+    }
+
+    pub fn find_name(&self,id:usize)->Option<&str> {
+	if id < self.id_to_name.len() {
+	    Some(&self.id_to_name[id])
+	} else {
+	    None
+	}
+    }
+}
+
+
 fn main()->Res<()> {
     let mut args = Arguments::from_env();
 
@@ -226,7 +267,7 @@ fn main()->Res<()> {
     }
 
     let mut component_ids_per_layer = Array3::zeros((nlay,ny,nx));
-    let mut component_names_per_layer = Vec::new();
+    let mut component_names_per_layer : Vec<Vec<Option<String>>> = Vec::new();
 
     for ilay in 0..nlay {
 	let ccs = &cc[ilay];
@@ -256,7 +297,7 @@ fn main()->Res<()> {
 	    }
 	}
 
-	let mut component_names = vec![None;m];
+	let mut component_names : Vec<Option<String>> = vec![None;m];
 
 	// Try to match components
 	for (name,points) in net_infos[ilay].index.iter() {
@@ -272,7 +313,7 @@ fn main()->Res<()> {
 		    if ix < nx && iy < ny {
 			let icom = component_ids_per_layer[[ilay,iy,ix]];
 			if icom > 0 {
-			    component_names[icom - 1] = Some(name);
+			    component_names[icom - 1] = Some(name.clone());
 			}
 			// print!(":{}",icom);
 		    } else {
@@ -319,9 +360,26 @@ fn main()->Res<()> {
 				  img.view(),
 				  ndarray_image::Colors::Rgb)?;
     }
+
+    let mut net_names = Registry::new();
+    let inc = net_names.register("N/C");
+    for ilay in 0..nlay {
+	for icomi in 0..cc[ilay].components.len() {
+	    if let Some(name) = &component_names_per_layer[ilay][icomi] {
+		net_names.register(name);
+	    }
+	}
+    }
+    let nnet = net_names.len();
+    println!("Total number of nets: {}",nnet);
+    for (inet,u) in net_names.id_to_name.iter().enumerate() {
+	println!("  {:5} {}",inet,u);
+    }
     
     // Capacitances
     if true {
+	let mut caps : BTreeMap<(usize,usize),f64> = BTreeMap::new();
+	
 	for ilay in 0..nlay {
 	    println!("Layer {}",ilay);
 	    let mut jlays = Vec::new();
@@ -336,29 +394,52 @@ fn main()->Res<()> {
 	    for jlay in jlays {
 		let ccj = &cc[jlay];
 		for (icomi,comi) in cci.components.iter().enumerate() {
-		    for (icomj,comj) in ccj.components.iter().enumerate() {
-			let n = comi.intersection(comj).count();
-			if n > 0 {
-			    let area = n as f64 * delta * delta * 1e-6;
-			    let cap = 8.854e-12 * eps_rel * area
-				/ (thickness * 1e-3);
-			    if cap >= cap_min {
-				println!("{:7.3} pF\t{}[{:02}:{:05}] - {}[{:02}:{:05}]",
-					 cap/1e-12,
-					 component_names_per_layer[ilay][icomi]
-					 .map(|x| x.as_str())
-					 .unwrap_or("?"),
-					 ilay,icomi,
-					 component_names_per_layer[jlay][icomj]
-					 .map(|x| x.as_str())
-					 .unwrap_or("?"),
-					 jlay,icomj);
+		    if let Some(namei) = &component_names_per_layer[ilay][icomi] {
+			let inet = net_names.find_id(namei).unwrap();
+			if inet == inc {
+			    continue;
+			}
+			for (icomj,comj) in ccj.components.iter().enumerate() {
+			    if let Some(namej) = &component_names_per_layer[jlay][icomj] {
+				let jnet = net_names.find_id(namej).unwrap();
+				if jnet == inc {
+				    continue;
+				}
+				if inet != jnet {
+				    let n = comi.intersection(comj).count();
+				    if n > 0 {
+					let area = n as f64 * delta * delta * 1e-6;
+					let cap = 8.854e-12 * eps_rel * area
+					    / (thickness * 1e-3);
+
+					let a = inet.min(jnet);
+					let b = inet.max(jnet);
+					let mut c = caps.entry((a,b)).or_insert(0.0);
+					*c += cap;
+
+				    }
+				}
 			    }
 			}
 		    }
 		}
 	    }
-	    // cc[ilay].dump();
+	}
+
+	let mut sig_caps : BTreeMap<i64,(usize,usize)> = BTreeMap::new();
+	let scale = 1e-18;
+	for (&(inet,jnet),&cap) in caps.iter() {
+	    if cap >= cap_min {
+		let cap_i = (cap/scale).round() as i64;
+		sig_caps.insert(cap_i,(inet,jnet));
+	    }
+	}
+	for (&cap_i,&(inet,jnet)) in sig_caps.iter() {
+	    let cap = cap_i as f64 * (scale/1e-12);
+	    println!("{:7.3} pF\t{}\t{}",
+		     cap,
+		     net_names.find_name(inet).unwrap(),
+		     net_names.find_name(jnet).unwrap());
 	}
     }
     
