@@ -41,7 +41,7 @@ impl Artwork {
     pub fn new(lay_fns:&[&str])->Res<Self> {
 	let mut layers_opt = None;
 	for (ilay,lay_fn) in lay_fns.iter().enumerate() {
-	    println!("Loading layer {} from {}",ilay,lay_fn);
+	    println!("# Loading layer {} from {}",ilay,lay_fn);
 	    let img = ndarray_image::open_gray_image(lay_fn)?;
 	    let (ny,nx) = img.dim();
 	    let mut layers = layers_opt.take()
@@ -219,7 +219,6 @@ impl Registry {
 fn main()->Res<()> {
     let mut args = Arguments::from_env();
 
-    println!("Layers");
     let lay_fns : Vec<String> = args.values_from_str("--layer")?;
     let lay_fns_str : Vec<&str> = lay_fns.iter().map(|s| s.as_str()).collect();
 
@@ -228,7 +227,7 @@ fn main()->Res<()> {
 
     let artwork = Artwork::new(&lay_fns_str)?;
     let (ny,nx) = artwork.layers.dim();
-    println!("Dimensions: {} x {}",ny,nx);
+    println!("# Dimensions: {} x {}",ny,nx);
 
     let dpi : f64 = args.opt_value_from_str("--dpi")?.unwrap_or(600.0);
     let eps_rel : f64 = args.opt_value_from_str("--eps-rel")?.unwrap_or(4.2);
@@ -260,7 +259,7 @@ fn main()->Res<()> {
 
     let mut net_infos = Vec::new();
     for path in &gbr_fns {
-	println!("Loading Gerber file {}",path);
+	println!("# Loading Gerber file {}",path);
 	let img = Image::from_file(path)?;
 	let infos : NetInfos = (&img).into();
 	net_infos.push(infos);
@@ -272,7 +271,7 @@ fn main()->Res<()> {
     for ilay in 0..nlay {
 	let ccs = &cc[ilay];
 	let m = ccs.components.len();
-	println!("Layer {} components {}",ilay,m);
+	println!("# Layer {} components {}",ilay,m);
 
 	let mut palette = Array2::zeros((m,3));
 	for i in 0..m {
@@ -338,7 +337,7 @@ fn main()->Res<()> {
 		    let ix = ixf as usize;
 		    let iy = iyf as usize;
 		    if ix < nx && iy < ny {
-			println!("Marking ix = {}, iy = {}",ix,iy);
+			println!("# Marking ix = {}, iy = {}",ix,iy);
 			for ix2 in 0..nx {
 			    img[[iy,ix2,0]] ^= 255;
 			}
@@ -346,10 +345,10 @@ fn main()->Res<()> {
 			    img[[iy2,ix,0]] ^= 255;
 			}
 		    } else {
-			println!("Not marking, ix = {}, iy = {}",ix,iy);
+			println!("# Not marking, ix = {}, iy = {}",ix,iy);
 		    }
 		} else {
-		    println!("Not marking, ixf = {}, iyf = {}",ixf,iyf);
+		    println!("# Not marking, ixf = {}, iyf = {}",ixf,iyf);
 		}
 	    },
 	    _ => ()
@@ -371,9 +370,9 @@ fn main()->Res<()> {
 	}
     }
     let nnet = net_names.len();
-    println!("Total number of nets: {}",nnet);
+    println!("# Total number of nets: {}",nnet);
     for (inet,u) in net_names.id_to_name.iter().enumerate() {
-	println!("  {:5} {}",inet,u);
+	println!("N\t{:5}\t{}",inet,u);
     }
     
     // Capacitances
@@ -381,7 +380,7 @@ fn main()->Res<()> {
 	let mut caps : BTreeMap<(usize,usize),f64> = BTreeMap::new();
 	
 	for ilay in 0..nlay {
-	    println!("Layer {}",ilay);
+	    println!("# Layer {}",ilay);
 	    let mut jlays = Vec::new();
 	    if ilay > 1 {
 		jlays.push(ilay - 1);
@@ -436,7 +435,7 @@ fn main()->Res<()> {
 	}
 	for (&cap_i,&(inet,jnet)) in sig_caps.iter() {
 	    let cap = cap_i as f64 * (scale/1e-12);
-	    println!("{:7.3} pF\t{}\t{}",
+	    println!("C\t{:7.3} pF\t{}\t{}",
 		     cap,
 		     net_names.find_name(inet).unwrap(),
 		     net_names.find_name(jnet).unwrap());
