@@ -1,4 +1,8 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 mod math;
+mod config;
 mod math_random;
 mod interpol;
 mod xorwow;
@@ -9,21 +13,18 @@ mod ndarray_image;
 mod gerber;
 mod common;
 
+use log::{trace,info,error};
 use std::collections::{BTreeSet,BTreeMap};
 use std::error::Error;
 use std::fs::File;
 use std::path::Path;
 use std::io::{Read,Write,BufWriter,BufReader};
-// use ndarray::{Array2,Array3,ArrayViewMut2,ArrayViewMut3};
-// use rayon::prelude::*;
 use math::*;
-// use math_random::Random;
-// use disk::DiskIterator;
-// use progress::ProgressIndicator;
 use pico_args::Arguments;
 
 use xorwow::Xorwow;
 use gerber::{Image,NetInfos};
+use config::{Config,Loadable};
 
 use common::*;
 
@@ -38,10 +39,10 @@ struct Artwork {
 }
 
 impl Artwork {
-    pub fn new(lay_fns:&[&str])->Res<Self> {
+    pub fn new<P:AsRef<Path>>(lay_fns:&[P])->Res<Self> {
 	let mut layers_opt = None;
 	for (ilay,lay_fn) in lay_fns.iter().enumerate() {
-	    println!("# Loading layer {} from {}",ilay,lay_fn);
+	    // info!("Loading layer {} from {:?}",ilay,lay_fn);
 	    let img = ndarray_image::open_gray_image(lay_fn)?;
 	    let (ny,nx) = img.dim();
 	    let mut layers = layers_opt.take()
@@ -215,38 +216,70 @@ impl Registry {
     }
 }
 
-
 fn main()->Res<()> {
+    simple_logger::SimpleLogger::new().init()?;
+
+    let res = main0();
+    if let Err(e) = &res {
+	error!("{}",e);
+    }
+
+    res
+}
+
+fn main0()->Res<()> {
     let mut args = Arguments::from_env();
 
-    let lay_fns : Vec<String> = args.values_from_str("--layer")?;
-    let lay_fns_str : Vec<&str> = lay_fns.iter().map(|s| s.as_str()).collect();
+    let config_fn : String = args.value_from_str("--config")?;
+    info!("Loading configuration from {}",config_fn);
+    let config = Config::load(&config_fn)?;
 
-    let gbr_fns : Vec<String> = args.values_from_str("--gerber")?;
-    let gbr_fns_str : Vec<&str> = gbr_fns.iter().map(|s| s.as_str()).collect();
-
-    let artwork = Artwork::new(&lay_fns_str)?;
+    let lay_fns : Vec<String> =
+	config.layers
+	.iter()
+	.map(|l| format!("{}/{}",
+			 config.input,
+			 l.bitmap))
+	.collect();
+    let artwork = Artwork::new(&lay_fns)?;
     let (ny,nx) = artwork.layers.dim();
-    println!("# Dimensions: {} x {}",ny,nx);
-
-    let dpi : f64 = args.opt_value_from_str("--dpi")?.unwrap_or(600.0);
-    let eps_rel : f64 = args.opt_value_from_str("--eps-rel")?.unwrap_or(4.2);
-    let thickness : f64 = args.opt_value_from_str("--thickness")?.
-	unwrap_or(1.6);
-    let cap_min : f64 = args.opt_value_from_str("--cap-min")?.unwrap_or(1.0e-12);
-    let x0 : f64 = args.opt_value_from_str("--origin-x")?.unwrap_or(0.0);
-    let y0 : f64 = args.opt_value_from_str("--origin-y")?.unwrap_or(0.0);
-    let mark_x : Option<f64> = args.opt_value_from_str("--mark-x")?;
-    let mark_y : Option<f64> = args.opt_value_from_str("--mark-y")?;
-
-    let cc = artwork.connected_components();
     let nlay = artwork.num_layers;
-    
-    let delta = 25.4 / dpi;
+    info!("Dimensions: {} x {}, number of layers: {}",ny,nx,nlay);
 
-    let (ny,nx) = artwork.layers.dim();
+    info!("Creating output directory {}",config.output);
+    std::fs::create_dir_all(&config.output)?;
 
-    let mut xw = Xorwow::new(1);
+    let mut net_infos = Vec::new();
+    for ilay in 0..nlay {
+	let path = format!("{}/{}",config.input,config.layers[ilay].gerber);
+	let img = Image::from_file(&path)?;
+	let infos : NetInfos = (&img).into();
+	net_infos.push(infos);
+    }
+
+    {
+	for ilay in 0..nlay {
+	    let lname = &config.layers[ilay].name;
+	    let report_path = format!("{}/nets-{}-{}.txt",
+				      config.output,
+				      ilay,lname);
+	    info!("Writing layer {} net report to {}",
+		  lname,
+		  report_path);
+	    let fd = File::create(report_path)?;
+	    let mut fd = BufWriter::new(fd);
+	    for (name,points) in net_infos[ilay].index.iter() {
+		writeln!(fd,
+			 "{} {} {} {}",
+			 name,
+			 points.len(),
+			 points[0].x,
+			 points[0].y)?;
+	    }
+	}
+    }
+
+    let delta = 25.4 / config.dpi;
 
     // Origin at bottom-left corner
     // Thus
@@ -257,21 +290,18 @@ fn main()->Res<()> {
     // ix = (X - X0)/delta - 0.5
     // iy = ny - (Y - Y0)/delta - 0.5
 
-    let mut net_infos = Vec::new();
-    for path in &gbr_fns {
-	println!("# Loading Gerber file {}",path);
-	let img = Image::from_file(path)?;
-	let infos : NetInfos = (&img).into();
-	net_infos.push(infos);
-    }
-
+    info!("Computing connected components");
+    let cc = artwork.connected_components();
     let mut component_ids_per_layer = Array3::zeros((nlay,ny,nx));
     let mut component_names_per_layer : Vec<Vec<Option<String>>> = Vec::new();
+    let mut xw = Xorwow::new(1);
 
+    info!("Marking components");
     for ilay in 0..nlay {
+	let lname = &config.layers[ilay].name;
 	let ccs = &cc[ilay];
 	let m = ccs.components.len();
-	println!("# Layer {} components {}",ilay,m);
+	info!("Layer {} ({}), number of components: {}",ilay,lname,m);
 
 	let mut palette = Array2::zeros((m,3));
 	for i in 0..m {
@@ -280,7 +310,6 @@ fn main()->Res<()> {
 	    palette[[i,1]] = ((x >> 8) & 255) as u8;
 	    palette[[i,2]] = (x & 255) as u8;
 	}
-
 	let mut img : Array3<u8> = Array3::zeros((ny,nx,3));
 
 	for (icom,com) in ccs.components.iter().enumerate() {
@@ -298,14 +327,23 @@ fn main()->Res<()> {
 
 	let mut component_names : Vec<Option<String>> = vec![None;m];
 
-	// Try to match components
-	for (name,points) in net_infos[ilay].index.iter() {
-	    // print!("{} -> ",name);
-	    for &gerber::Point { x, y } in points.iter() {
+	let x0 = config.origin.x;
+	let y0 = config.origin.y;
 
+	// Try to match components
+	info!("Matching components to nets");
+	let match_path = format!("{}/net-match-{}-{}.txt",
+				  config.output,
+				  ilay,lname);
+	let fd = File::create(match_path)?;
+	let mut fd = BufWriter::new(fd);
+	let mut n_out_of_bounds = 0;
+	for (name,points) in net_infos[ilay].index.iter() {
+	    write!(fd,"{} -> ",name)?;
+	    for &gerber::Point { x, y } in points.iter() {
 		let ixf = ((x - x0)/delta - 0.5).floor();
 		let iyf = (ny as f64 - (y - y0)/delta - 0.5).floor();
-		// print!("  {},{} ({},{})",x,y,ixf,iyf);
+		write!(fd,"  {},{} ({},{})",x,y,ixf,iyf)?;
 		if 0.0 <= ixf && 0.0 <= iyf {
 		    let ix = ixf as usize;
 		    let iy = iyf as usize;
@@ -314,22 +352,30 @@ fn main()->Res<()> {
 			if icom > 0 {
 			    component_names[icom - 1] = Some(name.clone());
 			}
-			// print!(":{}",icom);
+			write!(fd,":{}",icom)?;
 		    } else {
-			// print!("?");
+			n_out_of_bounds += 1;
+			write!(fd,"? (out of bounds, positive)")?;
 		    }
 		} else {
-		    // print!("?");
+		    n_out_of_bounds += 1;
+		    write!(fd,"? (out of bounds, negative)")?;
 		}
 	    }
-	    // println!();
+	    writeln!(fd)?;
+	}
+
+	if n_out_of_bounds > 0 {
+	    error!("Number of components that could not be matched: {}; \
+		    check origin and dpi",
+		   n_out_of_bounds);
 	}
 
 	component_names_per_layer.push(component_names);
 
 	// Add marker
-	match (mark_x,mark_y) {
-	    (Some(x),Some(y)) => {
+	match config.mark {
+	    Some(config::Point{x,y}) => {
 		// X = 
 		let ixf = ((x - x0)/delta - 0.5).floor();
 		let iyf = (ny as f64 - (y - y0)/delta - 0.5).floor();
@@ -337,7 +383,7 @@ fn main()->Res<()> {
 		    let ix = ixf as usize;
 		    let iy = iyf as usize;
 		    if ix < nx && iy < ny {
-			println!("# Marking ix = {}, iy = {}",ix,iy);
+			info!("Marking ix = {}, iy = {}",ix,iy);
 			for ix2 in 0..nx {
 			    img[[iy,ix2,0]] ^= 255;
 			}
@@ -345,21 +391,23 @@ fn main()->Res<()> {
 			    img[[iy2,ix,0]] ^= 255;
 			}
 		    } else {
-			println!("# Not marking, ix = {}, iy = {}",ix,iy);
+			info!("Not marking, ix = {}, iy = {}",ix,iy);
 		    }
 		} else {
-		    println!("# Not marking, ixf = {}, iyf = {}",ixf,iyf);
+		    info!("Not marking, ixf = {}, iyf = {}",ixf,iyf);
 		}
 	    },
 	    _ => ()
 	}
-	    
 
-	ndarray_image::save_image(&format!("layc{}.png",ilay + 1),
+	ndarray_image::save_image(&format!("{}/layc{}.png",
+					   config.output,
+					   ilay + 1),
 				  img.view(),
 				  ndarray_image::Colors::Rgb)?;
     }
 
+    info!("Computing net registry");
     let mut net_names = Registry::new();
     let inc = net_names.register("N/C");
     for ilay in 0..nlay {
@@ -370,53 +418,58 @@ fn main()->Res<()> {
 	}
     }
     let nnet = net_names.len();
-    println!("# Total number of nets: {}",nnet);
-    for (inet,u) in net_names.id_to_name.iter().enumerate() {
-	println!("N\t{:5}\t{}",inet,u);
+    info!("Total number of unique nets: {}",nnet);
+
+    {
+	let nets_path = format!("{}/nets.txt",config.output);
+	info!("Writing unique nets to {}",nets_path);
+	let fd = File::create(nets_path)?;
+	let mut fd = BufWriter::new(fd);
+	for (inet,u) in net_names.id_to_name.iter().enumerate() {
+	    writeln!(fd,"{} {}",inet,u)?;
+	}
     }
-    
+
     // Capacitances
-    if true {
-	let mut caps : BTreeMap<(usize,usize),f64> = BTreeMap::new();
-	
-	for ilay in 0..nlay {
-	    println!("# Layer {}",ilay);
-	    let mut jlays = Vec::new();
-	    if ilay > 1 {
-		jlays.push(ilay - 1);
-	    }
-	    if ilay + 1 < nlay {
-		jlays.push(ilay + 1);
-	    }
-	    let cci = &cc[ilay];
-	    // TODO: Normalize pairs and sum by nets
-	    for jlay in jlays {
-		let ccj = &cc[jlay];
-		for (icomi,comi) in cci.components.iter().enumerate() {
-		    if let Some(namei) = &component_names_per_layer[ilay][icomi] {
-			let inet = net_names.find_id(namei).unwrap();
-			if inet == inc {
-			    continue;
-			}
-			for (icomj,comj) in ccj.components.iter().enumerate() {
-			    if let Some(namej) = &component_names_per_layer[jlay][icomj] {
-				let jnet = net_names.find_id(namej).unwrap();
-				if jnet == inc {
-				    continue;
-				}
-				if inet != jnet {
-				    let n = comi.intersection(comj).count();
-				    if n > 0 {
-					let area = n as f64 * delta * delta * 1e-6;
-					let cap = 8.854e-12 * eps_rel * area
-					    / (thickness * 1e-3);
+    info!("Estimating mutual capacitances for adjacent layers");
+    let mut caps : BTreeMap<(usize,usize),f64> = BTreeMap::new();
+    
+    for ilay in 0..nlay {
+	let mut jlays = Vec::new();
+	if ilay > 1 {
+	    jlays.push(ilay - 1);
+	}
+	if ilay + 1 < nlay {
+	    jlays.push(ilay + 1);
+	}
+	let cci = &cc[ilay];
 
-					let a = inet.min(jnet);
-					let b = inet.max(jnet);
-					let mut c = caps.entry((a,b)).or_insert(0.0);
-					*c += cap;
+	for jlay in jlays {
+	    let ccj = &cc[jlay];
+	    for (icomi,comi) in cci.components.iter().enumerate() {
+		if let Some(namei) = &component_names_per_layer[ilay][icomi] {
+		    let inet = net_names.find_id(namei).unwrap();
+		    if inet == inc {
+			continue;
+		    }
+		    for (icomj,comj) in ccj.components.iter().enumerate() {
+			if let Some(namej) = &component_names_per_layer[jlay][icomj] {
+			    let jnet = net_names.find_id(namej).unwrap();
+			    if jnet == inc {
+				continue;
+			    }
+			    if inet != jnet {
+				let n = comi.intersection(comj).count();
+				if n > 0 {
+				    let area = n as f64 * delta * delta * 1e-6;
+				    let cap = 8.854e-12 * config.eps_rel * area
+					/ (config.thickness * 1e-3);
 
-				    }
+				    let a = inet.min(jnet);
+				    let b = inet.max(jnet);
+				    let c = caps.entry((a,b)).or_insert(0.0);
+				    *c += cap;
+
 				}
 			    }
 			}
@@ -424,29 +477,33 @@ fn main()->Res<()> {
 		}
 	    }
 	}
+    }
 
-	let mut sig_caps : BTreeMap<i64,(usize,usize)> = BTreeMap::new();
-	let scale = 1e-18;
-	for (&(inet,jnet),&cap) in caps.iter() {
-	    if cap >= cap_min {
-		let cap_i = (cap/scale).round() as i64;
-		sig_caps.insert(cap_i,(inet,jnet));
-	    }
-	}
-	for (&cap_i,&(inet,jnet)) in sig_caps.iter() {
-	    let cap = cap_i as f64 * (scale/1e-12);
-	    println!("C\t{:7.3} pF\t{}\t{}",
-		     cap,
-		     net_names.find_name(inet).unwrap(),
-		     net_names.find_name(jnet).unwrap());
+    let mut sig_caps : BTreeMap<i64,(usize,usize)> = BTreeMap::new();
+    let scale = 1e-18;
+    for (&(inet,jnet),&cap) in caps.iter() {
+	if cap >= config.cap_min {
+	    let cap_i = (cap/scale).round() as i64;
+	    sig_caps.insert(cap_i,(inet,jnet));
 	}
     }
-    
-    let output_fn : String = args.value_from_str("--output")?;
-    let fd = hdf5::File::create(&output_fn)?;
-    fd.new_dataset_builder().with_data(&artwork.layers).create("layers")?;
-    fd.new_dataset_builder().with_data(&component_ids_per_layer)
-	.create("component_ids_per_layer")?;
+
+    {
+	let mutcaps_path = format!("{}/mutcaps.txt",config.output);
+	info!("Writing mutual capacitances exceeding {} pF to {}",
+	      config.cap_min/1e-12,
+	      mutcaps_path);
+	let fd = File::create(mutcaps_path)?;
+	let mut fd = BufWriter::new(fd);
+	for (&cap_i,&(inet,jnet)) in sig_caps.iter() {
+	    let cap = cap_i as f64 * (scale/1e-12);
+	    writeln!(fd,
+		     "{:7.3} pF\t{}\t{}",
+		     cap,
+		     net_names.find_name(inet).unwrap(),
+		     net_names.find_name(jnet).unwrap())?;
+	}
+    }
 
     Ok(())
 }

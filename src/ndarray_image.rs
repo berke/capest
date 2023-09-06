@@ -1,3 +1,58 @@
+// Code copied from (deprecated) ndarray-image 0.3.1-alpha.0 by Geordon Worley
+// as a stop-gap measure.  README.md and licence for this file below.
+
+// # ndarray-image
+
+// [![Crates.io][ci]][cl] ![MIT/Apache][li] [![docs.rs][di]][dl] ![LoC][lo]
+
+// [ci]: https://img.shields.io/crates/v/ndarray-image.svg
+// [cl]: https://crates.io/crates/ndarray-image/
+
+// [li]: https://img.shields.io/crates/l/specs.svg?maxAge=2592000
+
+// [di]: https://docs.rs/ndarray-image/badge.svg
+// [dl]: https://docs.rs/ndarray-image/
+
+// [lo]: https://tokei.rs/b1/github/rust-cv/ndarray-image?category=code
+
+// Allows conversion between ndarray's types and image's types
+
+// ## Deprecated
+
+// WARNING: This crate is currently deprecated in favor of
+// https://github.com/rust-cv/nshare. Use `nshare` instead.  This
+// crate may eventually be repurposed, or if someone else wants to
+// take the name, just reach out on the Rust CV Discord.
+
+// This crate allows zero-copy conversion between `ArrayView` from
+// `ndarray` and `ImageBuffer` from `image`.
+
+// ## Output of `red_put` example
+
+// ![red_put](http://vadixidav.github.io/ndarray-image/red_put.png)
+
+// MIT License
+
+// Copyright (c) 2019 rust-photogrammetry
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 use image::{
     Bgr, Bgra, ImageBuffer, ImageError, ImageResult, Luma, LumaA, Pixel, Primitive, Rgb, Rgba,
 };

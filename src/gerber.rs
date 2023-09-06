@@ -1,7 +1,11 @@
-use std::fs::File;
-use std::path::Path;
-use std::io::{Read,Write,BufWriter,BufReader};
-use std::collections::BTreeMap;
+#![allow(dead_code)]
+
+use std::{
+    fs::File,
+    path::Path,
+    io::Read,
+    collections::BTreeMap
+};
 use regex::Regex;
 
 use crate::common::*;
@@ -70,7 +74,8 @@ pub enum ArithmeticExpr {
 
 impl TryFrom<&str> for ArithmeticExpr {
     type Error = Box<dyn Error>;
-    fn try_from(u:&str)->Res<ArithmeticExpr> {
+    fn try_from(_u:&str)->Res<ArithmeticExpr> {
+	// XXX: To be implemented
 	Ok(Self::Const(0.0))
     }
 }
@@ -274,19 +279,19 @@ impl From<&Image> for NetInfos {
     fn from(img:&Image)->Self {
 	let mut index : BTreeMap<String,Vec<Point>> = BTreeMap::new();
 	let mut net : Option<&str> = None;
-	let mut scale_x = 1.0;
-	let mut scale_y = 1.0;
+	let mut _scale_x = 1.0;
+	let mut _scale_y = 1.0;
 	let mut x_cf = CoordinateFormat::default();
 	let mut y_cf = CoordinateFormat::default();
 	for cmd in &img.commands {
 	    match cmd {
 		Command::SetMode(Mode::Inches) => {
-		    scale_x = 25.4;
-		    scale_y = scale_x;
+		    _scale_x = 25.4;
+		    _scale_y = _scale_x;
 		},
 		Command::SetMode(Mode::Millimeters) => {
-		    scale_x = 1.0;
-		    scale_y = scale_x;
+		    _scale_x = 1.0;
+		    _scale_y = _scale_x;
 		},
 		&Command::SetCoordinateFormat { x, y } => {
 		    x_cf = x;
@@ -316,7 +321,7 @@ impl From<&Image> for NetInfos {
 		    y
 		} => {
 		    if let Some(name) = net {
-			let mut v = index
+			let v = index
 			    .entry(name.to_string())
 			    .or_insert_with(|| Vec::new());
 			let x = x_cf.convert(x);
@@ -394,10 +399,10 @@ impl Image {
 	let decimal = r"[+-]?(:?[0-9]+(:?\.[0-9]*)?|\.[0-9]+)";
 	let def_aperture_rex = Regex::new(
 	    &format!(r"^ADD([1-9][0-9]+)([A-Za-z0-9]+),({decimal}(:?X{decimal})*)$"))?;
-	let circ_rex = Regex::new(&format!("^{decimal}(:?X({decimal}))?$"))?;
-	let rect_rex =
+	let _circ_rex = Regex::new(&format!("^{decimal}(:?X({decimal}))?$"))?;
+	let _rect_rex =
 	    Regex::new(&format!("^{decimal}X({decimal})(:?X({decimal}))?$"))?;
-	let obr_rex =
+	let _obr_rex =
 	    Regex::new(&format!("^{decimal}X({decimal})(:?X({decimal}))?$"))?;
 	let fs_rex = Regex::new(r"^FSLAX([0-9]{2})Y([0-9]{2})$")?;
 	let lp_rex = Regex::new(r"^LP([DC])$")?;
@@ -501,7 +506,7 @@ impl Image {
     pub fn from_file<P:AsRef<Path>>(path:P)->Res<Self> {
 	let mut fd = File::open(path)?;
 	let mut u = String::new();
-	let m = fd.read_to_string(&mut u)?;
+	let _m = fd.read_to_string(&mut u)?;
 	Ok(Self::parse(&u)?)
     }
 }

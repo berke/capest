@@ -3,12 +3,10 @@ mod math_random;
 mod common;
 mod gerber;
 
-use std::collections::BTreeSet;
-use std::fs::File;
-use std::path::Path;
-use std::io::{Read,Write,BufWriter,BufReader};
-use regex::Regex;
-use math::*;
+use std::{
+    fs::File,
+    io::Read
+};
 
 use pico_args::Arguments;
 
